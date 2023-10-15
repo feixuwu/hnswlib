@@ -1,7 +1,7 @@
 #include "../../hnswlib/hnswlib.h"
 #include <thread>
 #include <chrono>
-
+#include <iostream>
 
 // Multithreaded executor
 // The helper function copied from python_bindings/bindings.cpp (and that itself is copied from nmslib)
@@ -70,9 +70,9 @@ int main() {
     int num_threads = 20;       // Number of threads for operations with index
 
     // Initing index
-    hnswlib::L2Space space(dim);
-    hnswlib::HierarchicalNSW<float>* alg_hnsw = new hnswlib::HierarchicalNSW<float>(&space, max_elements, M, ef_construction);
-    alg_hnsw->ef_ = 64;
+    //hnswlib::L2Space<float, float> space(dim);
+    hnswlib::HierarchicalNSW<float>* alg_hnsw = new hnswlib::HierarchicalNSW<float>(new hnswlib::L2Space<float, float>(dim), new hnswlib::VmemLevel0, max_elements, M, ef_construction);
+    alg_hnsw->setEfSearch(64);
 
     // Generate random data
     std::mt19937 rng;

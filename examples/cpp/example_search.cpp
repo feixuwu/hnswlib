@@ -1,5 +1,5 @@
 #include "../../hnswlib/hnswlib.h"
-
+#include <iostream>
 
 int main() {
     int dim = 16;               // Dimension of the elements
@@ -9,8 +9,8 @@ int main() {
     int ef_construction = 200;  // Controls index search speed/build speed tradeoff
 
     // Initing index
-    hnswlib::L2Space space(dim);
-    hnswlib::HierarchicalNSW<float>* alg_hnsw = new hnswlib::HierarchicalNSW<float>(&space, max_elements, M, ef_construction);
+    hnswlib::L2Space<float, float> space(dim);
+    hnswlib::HierarchicalNSW<float>* alg_hnsw = new hnswlib::HierarchicalNSW<float>(&space, new hnswlib::VmemLevel0, max_elements, M, ef_construction);
 
     // Generate random data
     std::mt19937 rng;
@@ -42,7 +42,7 @@ int main() {
     delete alg_hnsw;
 
     // Deserialize index and check recall
-    alg_hnsw = new hnswlib::HierarchicalNSW<float>(&space, hnsw_path);
+    alg_hnsw = new hnswlib::HierarchicalNSW<float>(&space, new hnswlib::VmemLevel0, hnsw_path);
     correct = 0;
     for (int i = 0; i < max_elements; i++) {
         std::priority_queue<std::pair<float, hnswlib::labeltype>> result = alg_hnsw->searchKnn(data + i * dim, 1);
