@@ -1,5 +1,6 @@
 #include "../../hnswlib/hnswlib.h"
 #include <thread>
+#include <chrono>
 
 
 // Multithreaded executor
@@ -61,8 +62,8 @@ inline void ParallelFor(size_t start, size_t end, size_t numThreads, Function fn
 
 
 int main() {
-    int dim = 16;               // Dimension of the elements
-    int max_elements = 10000;   // Maximum number of elements, should be known beforehand
+    int dim = 768;               // Dimension of the elements
+    int max_elements = 100000;   // Maximum number of elements, should be known beforehand
     int M = 16;                 // Tightly connected with internal dimensionality of the data
                                 // strongly affects the memory consumption
     int ef_construction = 200;  // Controls index search speed/build speed tradeoff
@@ -71,6 +72,7 @@ int main() {
     // Initing index
     hnswlib::L2Space space(dim);
     hnswlib::HierarchicalNSW<float>* alg_hnsw = new hnswlib::HierarchicalNSW<float>(&space, max_elements, M, ef_construction);
+    alg_hnsw->ef_ = 64;
 
     // Generate random data
     std::mt19937 rng;
@@ -87,12 +89,16 @@ int main() {
     });
 
     // Query the elements for themselves and measure recall
+    auto begin = std::chrono::high_resolution_clock::now();
     std::vector<hnswlib::labeltype> neighbors(max_elements);
     ParallelFor(0, max_elements, num_threads, [&](size_t row, size_t threadId) {
         std::priority_queue<std::pair<float, hnswlib::labeltype>> result = alg_hnsw->searchKnn(data + dim * row, 1);
         hnswlib::labeltype label = result.top().second;
         neighbors[row] = label;
     });
+    auto end = std::chrono::high_resolution_clock::now();
+    std::cout<<"Time elapsed: "<<std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()<<" ms\n";
+    
     float correct = 0;
     for (int i = 0; i < max_elements; i++) {
         hnswlib::labeltype label = neighbors[i];
