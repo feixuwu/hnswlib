@@ -62,7 +62,7 @@ inline void ParallelFor(size_t start, size_t end, size_t numThreads, Function fn
 
 
 int main() {
-    int dim = 768;               // Dimension of the elements
+    int dim = 16;               // Dimension of the elements
     int max_elements = 100000;   // Maximum number of elements, should be known beforehand
     int M = 16;                 // Tightly connected with internal dimensionality of the data
                                 // strongly affects the memory consumption
@@ -70,7 +70,8 @@ int main() {
     int num_threads = 20;       // Number of threads for operations with index
 
     // Initing index
-    hnswlib::L2Space space(dim);
+    //hnswlib::L2Space space(dim);
+    hnswlib::InnerProductSpace space(dim);
     hnswlib::HierarchicalNSW<float>* alg_hnsw = new hnswlib::HierarchicalNSW<float>(&space, max_elements, M, ef_construction);
     alg_hnsw->ef_ = 64;
 

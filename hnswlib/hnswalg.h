@@ -13,6 +13,138 @@ namespace hnswlib {
 typedef unsigned int tableint;
 typedef unsigned int linklistsizeint;
 
+#define CHECK(x)
+
+class DataLevel0Memory {
+ public:
+   DataLevel0Memory(size_t size_data_per_element)
+       : size_data_per_element_(size_data_per_element) {
+
+     // 1. 如果单个element大小大于等于MIN_MEMORY_BLOCK_SIZE, 则每个block就存一个element.
+     // 2. 否则通过计算得出每个block存放的元素，以及block的大小.
+     CHECK(size_data_per_element_ > 0);
+     if (size_data_per_element_ >= MIN_MEMORY_BLOCK_SIZE) {
+       element_count_per_block_ = 1;
+     } else {
+       element_count_per_block_ = (MIN_MEMORY_BLOCK_SIZE  + (size_data_per_element_ - 1)) / size_data_per_element_;
+     }
+   }
+
+   ~DataLevel0Memory() {
+     for (size_t i = 0; i < memory_blocks_.size(); i++) {
+       CHECK(memory_blocks_[i] != nullptr);
+       free(memory_blocks_[i]);
+       memory_blocks_[i] = nullptr;
+     }
+     std::vector<char*>().swap(memory_blocks_);
+   }
+
+   size_t Capacity() {
+     return capacity_;
+   }
+
+   size_t ElementCountPerBlock() {
+     return element_count_per_block_;
+   }
+
+   void Malloc(size_t max_elements) {
+     CHECK(memory_blocks_.empty());
+     if (max_elements < element_count_per_block_) {
+       AppendNonstandardBlock(max_elements);
+     } else {
+       size_t added_blocks = max_elements / element_count_per_block_;
+       AppendStandardBlocks(added_blocks);
+
+       size_t last_block_elements = max_elements % element_count_per_block_;
+       if (last_block_elements != 0) {
+         AppendNonstandardBlock(last_block_elements);
+       }
+     }
+     capacity_ = max_elements;
+   }
+
+   void Realloc(size_t max_elements) {
+     if (max_elements <= capacity_) {
+       //LOG(WARNING) << "Cannot Realloc, max_element(" << max_elements
+       //             << ") is le than the current capacity(" << capacity_ << ")";
+       return;
+     }
+
+     size_t full_block_count = max_elements / element_count_per_block_;
+     if (capacity_ % element_count_per_block_ != 0) {
+       if (full_block_count < memory_blocks_.size()) {
+         ReallocLastBlocks(max_elements % element_count_per_block_);
+         capacity_ = max_elements;
+         return;
+       } else {
+         ReallocLastBlocks(element_count_per_block_);
+       }
+     }
+
+     size_t added_blocks = full_block_count - memory_blocks_.size();
+     AppendStandardBlocks(added_blocks);
+
+     size_t last_block_elements = max_elements % element_count_per_block_;
+     if (last_block_elements != 0) {
+       AppendNonstandardBlock(last_block_elements);
+     }
+     capacity_ = max_elements;
+     return;
+   }
+
+   char* GetElementPtr(tableint internal_id) {
+     //CHECK(internal_id < capacity_) << "internal_id: " << internal_id
+     //    << ", capacity: " << capacity_;
+     size_t index = internal_id / element_count_per_block_;
+     size_t elements_offset_in_block = internal_id % element_count_per_block_;
+     //CHECK(index < memory_blocks_.size()) << "index: " << index
+     //    << ", memory_blocks size: " << memory_blocks_.size();
+     return memory_blocks_[index] + elements_offset_in_block * size_data_per_element_;
+   }
+
+   char* GetMemoryBlockPtr(size_t index) {
+     //CHECK(index < memory_blocks_.size()) << "index: " << index
+     //    << ", memory_blocks size: "<< memory_blocks_.size();
+     return memory_blocks_[index];
+   }
+
+ private:
+   DataLevel0Memory(const DataLevel0Memory&) = delete;
+   DataLevel0Memory& operator=(const DataLevel0Memory&) = delete;
+
+   void AppendStandardBlocks(size_t count) {
+     for (size_t i = 0; i < count; i++) {
+       char* ptr = (char *) malloc(element_count_per_block_ * size_data_per_element_);
+       CHECK(ptr != nullptr);
+       memory_blocks_.emplace_back(ptr);
+     }
+   }
+
+   void AppendNonstandardBlock(size_t elements) {
+     char* ptr = (char *) malloc(elements * size_data_per_element_);
+     CHECK(ptr != nullptr);
+     memory_blocks_.emplace_back(ptr);
+   }
+
+   void ReallocLastBlocks(size_t elements) {
+     //CHECK(!memory_blocks_.empty());
+     //CHECK(capacity_ % element_count_per_block_ < elements && elements <= element_count_per_block_)
+     //    << ", capacity: " << capacity_ << ", element_count_per_block: " << element_count_per_block_
+     //    << ", elements: " << elements;
+     size_t last_block_index = memory_blocks_.size() - 1;
+     char* ptr = (char *) realloc(memory_blocks_[last_block_index], elements * size_data_per_element_);
+     CHECK(ptr != nullptr);
+     memory_blocks_[last_block_index] = ptr;
+   }
+
+   size_t capacity_{0};
+   size_t size_data_per_element_{0};
+   size_t element_count_per_block_{0};
+   std::vector<char*> memory_blocks_;
+
+   static const size_t MIN_MEMORY_BLOCK_SIZE = 128 * 1024 * 1024;
+};
+
 template<typename dist_t>
 class HierarchicalNSW : public AlgorithmInterface<dist_t> {
  public:
@@ -46,7 +178,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     size_t size_links_level0_{0};
     size_t offsetData_{0}, offsetLevel0_{0}, label_offset_{ 0 };
 
-    char *data_level0_memory_{nullptr};
+    DataLevel0Memory *data_level0_memory_{nullptr};
     char **linkLists_{nullptr};
     std::vector<int> element_levels_;  // keeps level of each element
 
@@ -116,9 +248,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         label_offset_ = size_links_level0_ + data_size_;
         offsetLevel0_ = 0;
 
-        data_level0_memory_ = (char *) malloc(max_elements_ * size_data_per_element_);
-        if (data_level0_memory_ == nullptr)
-            throw std::runtime_error("Not enough memory");
+        data_level0_memory_ = new DataLevel0Memory(size_data_per_element_);
+        data_level0_memory_->Malloc(max_elements_);
 
         cur_element_count = 0;
 
@@ -138,7 +269,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
 
     ~HierarchicalNSW() {
-        free(data_level0_memory_);
+        delete data_level0_memory_;
         for (tableint i = 0; i < cur_element_count; i++) {
             if (element_levels_[i] > 0)
                 free(linkLists_[i]);
@@ -170,23 +301,23 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
     inline labeltype getExternalLabel(tableint internal_id) const {
         labeltype return_label;
-        memcpy(&return_label, (data_level0_memory_ + internal_id * size_data_per_element_ + label_offset_), sizeof(labeltype));
+        memcpy(&return_label, (data_level0_memory_->GetElementPtr(internal_id) + label_offset_), sizeof(labeltype));
         return return_label;
     }
 
 
     inline void setExternalLabel(tableint internal_id, labeltype label) const {
-        memcpy((data_level0_memory_ + internal_id * size_data_per_element_ + label_offset_), &label, sizeof(labeltype));
+        memcpy((data_level0_memory_->GetElementPtr(internal_id) + label_offset_), &label, sizeof(labeltype));
     }
 
 
     inline labeltype *getExternalLabeLp(tableint internal_id) const {
-        return (labeltype *) (data_level0_memory_ + internal_id * size_data_per_element_ + label_offset_);
+        return (labeltype *) (data_level0_memory_->GetElementPtr(internal_id) + label_offset_);
     }
 
 
     inline char *getDataByInternalId(tableint internal_id) const {
-        return (data_level0_memory_ + internal_id * size_data_per_element_ + offsetData_);
+        return (data_level0_memory_->GetElementPtr(internal_id) + offsetData_);
     }
 
 
@@ -250,18 +381,20 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             size_t size = getListCount((linklistsizeint*)data);
             tableint *datal = (tableint *) (data + 1);
 #ifdef USE_SSE
-            _mm_prefetch((char *) (visited_array + *(data + 1)), _MM_HINT_T0);
-            _mm_prefetch((char *) (visited_array + *(data + 1) + 64), _MM_HINT_T0);
-            _mm_prefetch(getDataByInternalId(*datal), _MM_HINT_T0);
-            _mm_prefetch(getDataByInternalId(*(datal + 1)), _MM_HINT_T0);
+            // _mm_prefetch((char *) (visited_array + *(data + 1)), _MM_HINT_T0);
+            // _mm_prefetch((char *) (visited_array + *(data + 1) + 64), _MM_HINT_T0);
+            // _mm_prefetch(getDataByInternalId(*datal), _MM_HINT_T0);
+            // _mm_prefetch(getDataByInternalId(*(datal + 1)), _MM_HINT_T0);
 #endif
 
             for (size_t j = 0; j < size; j++) {
                 tableint candidate_id = *(datal + j);
 //                    if (candidate_id == 0) continue;
 #ifdef USE_SSE
-                _mm_prefetch((char *) (visited_array + *(datal + j + 1)), _MM_HINT_T0);
-                _mm_prefetch(getDataByInternalId(*(datal + j + 1)), _MM_HINT_T0);
+                if (j + 1 < size) {
+                    _mm_prefetch((char *) (visited_array + *(datal + j + 1)), _MM_HINT_T0);
+                    _mm_prefetch(getDataByInternalId(*(datal + j + 1)), _MM_HINT_T0);
+                }
 #endif
                 if (visited_array[candidate_id] == visited_array_tag) continue;
                 visited_array[candidate_id] = visited_array_tag;
@@ -289,7 +422,6 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
         return top_candidates;
     }
-
 
     template <bool has_deletions, bool collect_metrics = false>
     std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst>
@@ -333,19 +465,21 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             }
 
 #ifdef USE_SSE
-            _mm_prefetch((char *) (visited_array + *(data + 1)), _MM_HINT_T0);
-            _mm_prefetch((char *) (visited_array + *(data + 1) + 64), _MM_HINT_T0);
-            _mm_prefetch(data_level0_memory_ + (*(data + 1)) * size_data_per_element_ + offsetData_, _MM_HINT_T0);
-            _mm_prefetch((char *) (data + 2), _MM_HINT_T0);
+            // _mm_prefetch((char *) (visited_array + *(data + 1)), _MM_HINT_T0);
+            // _mm_prefetch((char *) (visited_array + *(data + 1) + 64), _MM_HINT_T0);
+            // _mm_prefetch(data_level0_memory_->GetElementPtr(*(data + 1)) + offsetData_, _MM_HINT_T0);
+            // _mm_prefetch((char *) (data + 2), _MM_HINT_T0);
 #endif
 
             for (size_t j = 1; j <= size; j++) {
                 int candidate_id = *(data + j);
 //                    if (candidate_id == 0) continue;
 #ifdef USE_SSE
-                _mm_prefetch((char *) (visited_array + *(data + j + 1)), _MM_HINT_T0);
-                _mm_prefetch(data_level0_memory_ + (*(data + j + 1)) * size_data_per_element_ + offsetData_,
-                                _MM_HINT_T0);  ////////////
+                if (j + 1 <= size) {
+                    _mm_prefetch((char *) (visited_array + *(data + j + 1)), _MM_HINT_T0);
+                    _mm_prefetch(data_level0_memory_->GetElementPtr(*(data + j + 1)) + offsetData_,
+                                    _MM_HINT_T0);  ////////////
+                }
 #endif
                 if (!(visited_array[candidate_id] == visited_array_tag)) {
                     visited_array[candidate_id] = visited_array_tag;
@@ -356,7 +490,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                     if (top_candidates.size() < ef || lowerBound > dist) {
                         candidate_set.emplace(-dist, candidate_id);
 #ifdef USE_SSE
-                        _mm_prefetch(data_level0_memory_ + candidate_set.top().second * size_data_per_element_ +
+                        _mm_prefetch(data_level0_memory_->GetElementPtr(candidate_set.top().second) +
                                         offsetLevel0_,  ///////////
                                         _MM_HINT_T0);  ////////////////////////
 #endif
@@ -376,6 +510,100 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
         visited_list_pool_->releaseVisitedList(vl);
         return top_candidates;
+    }
+
+
+    template <bool has_deletions, bool collect_metrics = false>
+    std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst>
+    searchBaseLayerSTOptimize(tableint ep_id, const void *data_point, size_t ef, BaseFilterFunctor* isIdAllowed = nullptr) const {
+        VisitedList *vl = visited_list_pool_->getFreeVisitedList();
+        vl_type *visited_array = vl->mass;
+        vl_type visited_array_tag = vl->curV;
+
+        std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
+        std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> filter_candidates;
+        std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> candidate_set;
+
+        dist_t lowerBound;
+        dist_t dist = fstdistfunc_(data_point, getDataByInternalId(ep_id), dist_func_param_);
+        lowerBound = dist;
+        top_candidates.emplace(dist, ep_id);
+        candidate_set.emplace(-dist, ep_id);
+        if ((!has_deletions || !isMarkedDeleted(ep_id)) && ((!isIdAllowed) || (*isIdAllowed)(getExternalLabel(ep_id)))) {
+            filter_candidates.emplace(dist, ep_id);
+        }
+
+        visited_array[ep_id] = visited_array_tag;
+
+        while (!candidate_set.empty()) {
+            std::pair<dist_t, tableint> current_node_pair = candidate_set.top();
+
+            if ((-current_node_pair.first) > lowerBound &&
+                (filter_candidates.size() == ef || (!isIdAllowed && !has_deletions))) {
+                break;
+            }
+            candidate_set.pop();
+
+            tableint current_node_id = current_node_pair.second;
+            int *data = (int *) get_linklist0(current_node_id);
+            size_t size = getListCount((linklistsizeint*)data);
+//                bool cur_node_deleted = isMarkedDeleted(current_node_id);
+            if (collect_metrics) {
+                metric_hops++;
+                metric_distance_computations+=size;
+            }
+
+#ifdef USE_SSE
+            // _mm_prefetch((char *) (visited_array + *(data + 1)), _MM_HINT_T0);
+            // _mm_prefetch((char *) (visited_array + *(data + 1) + 64), _MM_HINT_T0);
+            // _mm_prefetch(data_level0_memory_->GetElementPtr(*(data + 1)) + offsetData_, _MM_HINT_T0);
+            // _mm_prefetch((char *) (data + 2), _MM_HINT_T0);
+#endif
+
+            for (size_t j = 1; j <= size; j++) {
+                int candidate_id = *(data + j);
+//                    if (candidate_id == 0) continue;
+#ifdef USE_SSE
+                if (j + 1 <= size) {
+                    _mm_prefetch((char *) (visited_array + *(data + j + 1)), _MM_HINT_T0);
+                    _mm_prefetch(data_level0_memory_->GetElementPtr(*(data + j + 1)) + offsetData_,
+                                    _MM_HINT_T0);  ////////////
+                }
+#endif
+                if (!(visited_array[candidate_id] == visited_array_tag)) {
+                    visited_array[candidate_id] = visited_array_tag;
+
+                    char *currObj1 = (getDataByInternalId(candidate_id));
+                    dist_t dist = fstdistfunc_(data_point, currObj1, dist_func_param_);
+
+                    if (filter_candidates.size() < ef || lowerBound > dist) {
+                        candidate_set.emplace(-dist, candidate_id);
+#ifdef USE_SSE
+                        _mm_prefetch(data_level0_memory_->GetElementPtr(candidate_set.top().second) +
+                                        offsetLevel0_,  ///////////
+                                        _MM_HINT_T0);  ////////////////////////
+#endif
+                        top_candidates.emplace(dist, candidate_id);
+                        if ((!has_deletions || !isMarkedDeleted(candidate_id)) && ((!isIdAllowed) || (*isIdAllowed)(getExternalLabel(candidate_id)))){
+                            filter_candidates.emplace(dist, candidate_id);
+                        }
+
+                        if (top_candidates.size() > ef){
+                            top_candidates.pop();
+                        }
+                        if (filter_candidates.size() > ef){
+                            filter_candidates.pop();
+                        }
+                            
+                        if (!top_candidates.empty())
+                            lowerBound = top_candidates.top().first;
+                    }
+                }
+            }
+        }
+
+        visited_list_pool_->releaseVisitedList(vl);
+        return filter_candidates;
     }
 
 
@@ -423,12 +651,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
 
     linklistsizeint *get_linklist0(tableint internal_id) const {
-        return (linklistsizeint *) (data_level0_memory_ + internal_id * size_data_per_element_ + offsetLevel0_);
-    }
-
-
-    linklistsizeint *get_linklist0(tableint internal_id, char *data_level0_memory_) const {
-        return (linklistsizeint *) (data_level0_memory_ + internal_id * size_data_per_element_ + offsetLevel0_);
+        return (linklistsizeint *) (data_level0_memory_->GetElementPtr(internal_id) + offsetLevel0_);
     }
 
 
@@ -581,10 +804,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         std::vector<std::mutex>(new_max_elements).swap(link_list_locks_);
 
         // Reallocate base layer
-        char * data_level0_memory_new = (char *) realloc(data_level0_memory_, new_max_elements * size_data_per_element_);
-        if (data_level0_memory_new == nullptr)
-            throw std::runtime_error("Not enough memory: resizeIndex failed to allocate base layer");
-        data_level0_memory_ = data_level0_memory_new;
+        data_level0_memory_->Realloc(new_max_elements);
 
         // Reallocate all other layers
         char ** linkLists_new = (char **) realloc(linkLists_, sizeof(void *) * new_max_elements);
@@ -615,7 +835,15 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         writeBinaryPOD(output, mult_);
         writeBinaryPOD(output, ef_construction_);
 
-        output.write(data_level0_memory_, cur_element_count * size_data_per_element_);
+        size_t block_index = 0;
+        size_t left_element = cur_element_count;
+        CHECK(max_elements_ == data_level0_memory_->Capacity());
+        while (left_element > 0) {
+          size_t write_element_count = std::min(left_element, data_level0_memory_->ElementCountPerBlock());
+          output.write(data_level0_memory_->GetMemoryBlockPtr(block_index), write_element_count * size_data_per_element_);
+          left_element -= write_element_count;
+          block_index++;
+        }
 
         for (size_t i = 0; i < cur_element_count; i++) {
             unsigned int linkListSize = element_levels_[i] > 0 ? size_links_per_element_ * element_levels_[i] : 0;
@@ -687,10 +915,16 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
         input.seekg(pos, input.beg);
 
-        data_level0_memory_ = (char *) malloc(max_elements * size_data_per_element_);
-        if (data_level0_memory_ == nullptr)
-            throw std::runtime_error("Not enough memory: loadIndex failed to allocate level0");
-        input.read(data_level0_memory_, cur_element_count * size_data_per_element_);
+        size_t block_index = 0;
+        size_t left_element = cur_element_count;
+        data_level0_memory_ = new DataLevel0Memory(size_data_per_element_);
+        data_level0_memory_->Malloc(max_elements);
+        while (left_element > 0) {
+          size_t read_element_count = std::min(left_element, data_level0_memory_->ElementCountPerBlock());
+          input.read(data_level0_memory_->GetMemoryBlockPtr(block_index), read_element_count * size_data_per_element_);
+          left_element -= read_element_count;
+          block_index++;
+        }
 
         size_links_per_element_ = maxM_ * sizeof(tableint) + sizeof(linklistsizeint);
 
@@ -759,6 +993,28 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         return data;
     }
 
+    template<typename data_t>
+    void getDataByLabels(std::vector<uint32_t>& labels, std::vector<data_t>& vectors) const {
+      std::unique_lock<std::mutex> lock_table(label_lookup_lock);
+      std::vector<tableint> internalIds(labels.size());
+      for (size_t i = 0; i < labels.size(); ++i) {
+        auto search = label_lookup_.find(labels[i]);
+        if (search == label_lookup_.end() || isMarkedDeleted(search->second)) {
+          throw std::runtime_error("Label not found");
+        }
+        internalIds[i] = search->second;
+      }
+      lock_table.unlock();
+
+      size_t dim = *((size_t*) dist_func_param_);
+      for (size_t i = 0; i < labels.size(); ++i) {
+        // lock all operations with element by label
+        std::unique_lock<std::mutex> lock_label(getLabelOpMutex(labels[i]));
+        char* data_ptrv = getDataByInternalId(internalIds[i]);
+        data_t* data_ptr = (data_t*) data_ptrv;
+        memcpy(vectors.data() + dim * i, data_ptr, dim * sizeof(data_t));
+      }
+    }
 
     /*
     * Marks an element with the given label deleted, does NOT really change the current graph.
@@ -895,6 +1151,13 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             setExternalLabel(internal_id_replaced, label);
 
             std::unique_lock <std::mutex> lock_table(label_lookup_lock);
+
+            // if the element with the same label are found, exit directly.
+            auto search = label_lookup_.find(label);
+            if (search != label_lookup_.end() && !isMarkedDeleted(search->second)) {
+              assert(false);
+            }
+
             label_lookup_.erase(label_replaced);
             label_lookup_[label] = internal_id_replaced;
             lock_table.unlock();
@@ -1003,11 +1266,13 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                     int size = getListCount(data);
                     tableint *datal = (tableint *) (data + 1);
 #ifdef USE_SSE
-                    _mm_prefetch(getDataByInternalId(*datal), _MM_HINT_T0);
+                    // _mm_prefetch(getDataByInternalId(*datal), _MM_HINT_T0);
 #endif
                     for (int i = 0; i < size; i++) {
 #ifdef USE_SSE
-                        _mm_prefetch(getDataByInternalId(*(datal + i + 1)), _MM_HINT_T0);
+                        if (i + 1 < size) {
+                            _mm_prefetch(getDataByInternalId(*(datal + i + 1)), _MM_HINT_T0);
+                        }
 #endif
                         tableint cand = datal[i];
                         dist_t d = fstdistfunc_(dataPoint, getDataByInternalId(cand), dist_func_param_);
@@ -1110,7 +1375,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         tableint currObj = enterpoint_node_;
         tableint enterpoint_copy = enterpoint_node_;
 
-        memset(data_level0_memory_ + cur_c * size_data_per_element_ + offsetLevel0_, 0, size_data_per_element_);
+        memset(data_level0_memory_->GetElementPtr(cur_c) + offsetLevel0_, 0, size_data_per_element_);
 
         // Initialisation of the data and label
         memcpy(getExternalLabeLp(cur_c), &label, sizeof(labeltype));
@@ -1181,7 +1446,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
 
     std::priority_queue<std::pair<dist_t, labeltype >>
-    searchKnn(const void *query_data, size_t k, BaseFilterFunctor* isIdAllowed = nullptr) const {
+    searchKnn(const void *query_data, size_t k, BaseFilterFunctor* isIdAllowed = nullptr, size_t ef_runtime = 0) const {
         std::priority_queue<std::pair<dist_t, labeltype >> result;
         if (cur_element_count == 0) return result;
 
@@ -1216,12 +1481,19 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         }
 
         std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst> top_candidates;
+        size_t ef = ef_runtime > 0 ? std::max(ef_runtime, k) : std::max(ef_, k);
         if (num_deleted_) {
-            top_candidates = searchBaseLayerST<true, true>(
-                    currObj, query_data, std::max(ef_, k), isIdAllowed);
+          if (isIdAllowed != nullptr) {
+            top_candidates = searchBaseLayerSTOptimize<true, true>(currObj, query_data, ef, isIdAllowed);
+          } else {
+            top_candidates = searchBaseLayerST<true, true>(currObj, query_data, ef, isIdAllowed);
+          }
         } else {
-            top_candidates = searchBaseLayerST<false, true>(
-                    currObj, query_data, std::max(ef_, k), isIdAllowed);
+          if (isIdAllowed != nullptr) {
+            top_candidates = searchBaseLayerSTOptimize<false, true>(currObj, query_data, ef, isIdAllowed);
+          } else {
+            top_candidates = searchBaseLayerST<false, true>(currObj, query_data, ef, isIdAllowed);
+          }
         }
 
         while (top_candidates.size() > k) {

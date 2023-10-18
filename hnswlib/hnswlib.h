@@ -6,6 +6,7 @@
 #define USE_AVX
 #ifdef __AVX512F__
 #define USE_AVX512
+#define USE_AVX512_VNNI
 #endif
 #endif
 #endif
@@ -161,11 +162,11 @@ class AlgorithmInterface {
     virtual void addPoint(const void *datapoint, labeltype label, bool replace_deleted = false) = 0;
 
     virtual std::priority_queue<std::pair<dist_t, labeltype>>
-        searchKnn(const void*, size_t, BaseFilterFunctor* isIdAllowed = nullptr) const = 0;
+        searchKnn(const void*, size_t, BaseFilterFunctor* isIdAllowed = nullptr, size_t ef_runtime = 0) const = 0;
 
     // Return k nearest neighbor in the order of closer fist
     virtual std::vector<std::pair<dist_t, labeltype>>
-        searchKnnCloserFirst(const void* query_data, size_t k, BaseFilterFunctor* isIdAllowed = nullptr) const;
+        searchKnnCloserFirst(const void* query_data, size_t k, BaseFilterFunctor* isIdAllowed = nullptr, size_t ef_runtime = 0) const;
 
     virtual void saveIndex(const std::string &location) = 0;
     virtual ~AlgorithmInterface(){
@@ -175,11 +176,11 @@ class AlgorithmInterface {
 template<typename dist_t>
 std::vector<std::pair<dist_t, labeltype>>
 AlgorithmInterface<dist_t>::searchKnnCloserFirst(const void* query_data, size_t k,
-                                                 BaseFilterFunctor* isIdAllowed) const {
+                                                 BaseFilterFunctor* isIdAllowed, size_t ef_runtime) const {
     std::vector<std::pair<dist_t, labeltype>> result;
 
     // here searchKnn returns the result in the order of further first
-    auto ret = searchKnn(query_data, k, isIdAllowed);
+    auto ret = searchKnn(query_data, k, isIdAllowed, ef_runtime);
     {
         size_t sz = ret.size();
         result.resize(sz);

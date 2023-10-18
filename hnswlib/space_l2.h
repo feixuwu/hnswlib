@@ -1,9 +1,12 @@
 #pragma once
 #include "hnswlib.h"
+#include "distance_ip.h"
+#include "distance_l2.h"
+
 
 namespace hnswlib {
 
-static float
+/*static float
 L2Sqr(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
     float *pVect1 = (float *) pVect1v;
     float *pVect2 = (float *) pVect2v;
@@ -17,7 +20,7 @@ L2Sqr(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
         res += t * t;
     }
     return (res);
-}
+}*/
 
 #if defined(USE_AVX512)
 
@@ -155,7 +158,7 @@ L2SqrSIMD16ExtResiduals(const void *pVect1v, const void *pVect2v, const void *qt
     float *pVect2 = (float *) pVect2v + qty16;
 
     size_t qty_left = qty - qty16;
-    float res_tail = L2Sqr(pVect1, pVect2, &qty_left);
+    float res_tail = L2Sqr(pVect1, pVect2, qty_left);
     return (res + res_tail);
 }
 #endif
@@ -199,7 +202,7 @@ L2SqrSIMD4ExtResiduals(const void *pVect1v, const void *pVect2v, const void *qty
 
     float *pVect1 = (float *) pVect1v + qty4;
     float *pVect2 = (float *) pVect2v + qty4;
-    float res_tail = L2Sqr(pVect1, pVect2, &qty_left);
+    float res_tail = L2Sqr(pVect1, pVect2, qty_left);
 
     return (res + res_tail);
 }
@@ -212,8 +215,8 @@ class L2Space : public SpaceInterface<float> {
 
  public:
     L2Space(size_t dim) {
-        fstdistfunc_ = L2Sqr;
-#if defined(USE_SSE) || defined(USE_AVX) || defined(USE_AVX512)
+        fstdistfunc_ = L2SqrWrapper;
+/*#if defined(USE_SSE) || defined(USE_AVX) || defined(USE_AVX512)
     #if defined(USE_AVX512)
         if (AVX512Capable())
             L2SqrSIMD16Ext = L2SqrSIMD16ExtAVX512;
@@ -232,7 +235,7 @@ class L2Space : public SpaceInterface<float> {
             fstdistfunc_ = L2SqrSIMD16ExtResiduals;
         else if (dim > 4)
             fstdistfunc_ = L2SqrSIMD4ExtResiduals;
-#endif
+#endif*/
         dim_ = dim;
         data_size_ = dim * sizeof(float);
     }
